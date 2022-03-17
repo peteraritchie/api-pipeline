@@ -1,0 +1,29 @@
+{
+    "name": "bogus-api",
+    "version": "0.1.0",
+    "description": "Sample OpenAPI Repo",
+    "main": "index.js",
+    "scripts": {
+        "test": "echo \"Error: no test specified\" && exit 1",
+        "openapi-diff": "./node_modules/.bin/openapi-diff"
+    },
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/peteraritchie/bogus-api.git"
+    },
+    "keywords": [
+        "pipeline",
+        "repo",
+        "openapi",
+        "oas"
+    ],
+    "author": "Peter Ritchie",
+    "license": "MIT",
+    "bugs": {
+        "url": "https://github.com/peteraritchie/bogus-api/issues"
+    },
+    "homepage": "https://github.com/peteraritchie/bogus-api#readme",
+    "devDependencies": {
+        "openapi-diff": "^0.23.5"
+    }
+}

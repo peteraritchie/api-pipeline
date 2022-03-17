@@ -1,0 +1,345 @@
+defaults: &defaults
+  working_directory: ~/project
+
+# Use the latest 2.1 version of CircleCI pipeline process engine.
+# See: https://circleci.com/docs/2.0/configuration-reference
+version: 2.1
+
+orbs:
+  gh: circleci/github-cli@1.0.5
+  jq: circleci/jq@2.2.0
+
+executors:
+  node-executor:
+    docker:
+      - image: cimg/node:17.2.0
+  openapi-diff-executor:
+    docker:
+      - image: openapitools/openapi-diff:latest
+
+commands:
+  gh-install:
+    description: install github cli v2.3.0
+    steps: 
+      - gh/setup:
+          version: 2.3.0
+  save-workspace:
+    steps: 
+      - persist_to_workspace:
+          root: ~/
+          paths:
+            - project
+  cached-npm-install:  
+    steps:
+      - restore_cache:
+          keys:
+            - v1-deps-{{ checksum "package-lock.json" }}
+            - v1-deps-
+      - run: npm install
+      - save_cache:
+          key: v1-deps-{{ checksum "package-lock.json" }}
+          paths:
+            - node_modules
+  restore-workspace:
+    steps:
+      - attach_workspace:
+          at: ~/
+
+# A job is a collection of steps and an execution environment to run them in.
+# granularity: execution
+# See: https://circleci.com/docs/2.0/configuration-reference/#jobs
+jobs:
+
+  set-up:
+    description: >
+      set up the build environment
+    <<: *defaults
+    executor: node-executor
+    steps:
+      - gh-install
+      - checkout
+      - cached-npm-install
+      - run:
+          name: get-version
+          command: |
+            TAG=`gh release view --json tagName --jq .tagName`
+            echo $TAG > current-release.txt
+            echo "Current tag: $TAG"
+            mkdir $TAG
+            gh release download $TAG -D $TAG -p openapi.yml
+
+      - save-workspace
+
+  experiment:
+    executor: openapi-diff-executor
+    <<: *defaults
+    steps:
+      - restore-workspace
+      - run:
+          command: |
+            mkdir build-artifacts
+            java -jar /app/openapi-diff.jar src/openapi.yml src/openapi-2.yml --text build-artifacts/diff.txt --json build-artifacts/diff.json --markdown build-artifacts/diff.md
+      - store_artifacts:
+          path: build-artifacts
+          destination: ./build-artifacts
+
+  build:
+    description: >
+      the things
+    <<: *defaults
+    executor: node-executor
+    steps:
+      - restore-workspace
+      - gh-install
+      - run: |
+          gh --version
+          CURRENT_TAG=`cat current-release.txt`
+          echo $CURRENT_TAG
+      - run: 
+          command:
+            echo this is where build would happen
+      - store_artifacts:
+          path: build-artifacts
+          destination: ./build-artifacts
+      - save-workspace
+
+  lint:
+    description: >
+      the things
+    <<: *defaults
+    executor: node-executor
+    steps:
+      - restore-workspace
+      - store_artifacts:
+          path: build-artifacts
+          destination: ./build-artifacts
+
+  test:
+    description: >
+      the things
+    <<: *defaults
+    executor: node-executor
+    steps:
+      - restore-workspace
+      - gh-install
+      - run: 
+          name: build
+          command:
+            echo this is where test would happen
+            # store_test_results
+
+  verification:
+    description: >
+      verify no breaking changes
+    executor: node-executor
+    steps:
+      - restore-workspace
+      - run:
+          name: get current release
+          command: |
+            CURRENT_TAG=`cat current-release.txt`
+            echo $CURRENT_TAG
+            npx openapi-diff $CURRENT_TAG/openapi.yml src/openapi.yml > temp.json || :
+            cat temp.json
+            if [[ $? -ne 0 ]]
+            then
+              echo breaking changes!
+            fi
+            tail -n +2 temp.json > openapi-diff.json
+            rm temp.json
+            cat openapi-diff.json
+      - save-workspace
+
+      # diff
+      # potentially kick of manually approved task to increment major version
+      # if unclassified change, patch
+      # elseif minor, minor
+      # else error
+
+  version:
+    description: >
+      the things
+    <<: *defaults
+    executor: node-executor
+    steps:
+      - restore-workspace
+      - gh-install
+      - jq/install
+      - run:
+          name: get-version
+          command: |
+            CURRENT_TAG=`cat current-release.txt`
+            echo $CURRENT_TAG
+      # choose increment policy (patch or minor)
+      - run:
+          name: get-oas-change-type
+          command: |
+            NON_BREAKING_CHANGE_COUNT=`jq '.nonBreakingDifferences | length' openapi-diff.json`
+            BREAKING_CHANGE_COUNT=`jq '.breakingDifferences | length' openapi-diff.json`
+            UNCLASSIFIED_CHANGE_COUNT=`jq '.unclassifiedDifferences | length' openapi-diff.json`
+
+            if [[ $BREAKING_CHANGE_COUNT -ne 0 ]]
+            then
+              echo breaking > change-type.txt
+            elif [[ $NON_BREAKING_CHANGE_COUNT -ne 0 ]]
+            then
+              echo non-breaking > change-type.txt
+            elif [[ $UNCLASSIFIED_CHANGE_COUNT -ne 0 ]]
+            then
+              echo non > change-type.txt
+            else
+              echo non > change-type.txt
+            fi
+
+      - run: 
+          name: increment-version
+          command: |
+            CURRENT_TAG=`cat current-release.txt`
+            echo $CURRENT_TAG
+            VERSION_PARTS=(${CURRENT_TAG//./ })
+            MAJOR=${VERSION_PARTS[0]}
+            MINOR=${VERSION_PARTS[1]}
+            PATCH=${VERSION_PARTS[2]}
+            CHANGE_TYPE=`cat change-type.txt`
+            case $CHANGE_TYPE in 
+              breaking)
+                echo "$CHANGE_TYPE change!"
+                ;;
+              non-breaking)
+                MINOR=$((MINOR+1))
+                PATCH=0
+                RELEASE_TYPE="Minor release"
+                ;;
+              non)
+                PATCH=$((PATCH+1))
+                RELEASE_TYPE="Patch release"
+                ;;
+              *)
+                echo "unknown change type $CHANGE_TYPE"
+                exit 1
+            esac
+            NEW_TAG="$MAJOR.$MINOR.$PATCH"
+            echo $NEW_TAG > next-release.txt
+            cat next-release.txt
+            echo "$RELEASE_TYPE $NEW_TAG" > changelog.txt
+            cat changelog.txt
+
+      - run:
+          name: generate-changelog
+          command: |
+            git log -1 --pretty="%s" >> changelog.txt
+            cat changelog.txt
+
+      - save-workspace
+
+  package:
+    description: >
+      the things
+    <<: *defaults
+    executor: node-executor
+    steps:
+      - restore-workspace
+      # package
+      # zip
+      - run:
+          name: packaging
+          command:
+            echo this is where package would happen
+      - save-workspace # ?
+
+  release:
+    description: >
+      the things
+    <<: *defaults
+    executor: node-executor
+    steps:
+      - restore-workspace
+      - gh-install
+
+      - run:
+          name: get-release-version
+          command: |
+            NEXT_RELEASE=`cat next-release.txt`
+            echo export NEXT_TAG=$NEXT_RELEASE >> $BASH_ENV
+
+      - run:
+          name: release
+          command:
+            echo this is where release $NEXT_TAG would happen
+            echo gh release create $NEXT_TAG -F changelog.txt 'src\openapi.yml#OpenAPI Specification' 
+
+  deliver:
+    description: >
+      the things
+    <<: *defaults
+    executor: node-executor
+    steps:
+      - restore-workspace
+      - gh-install
+      # deliver documentation
+      # deliver package
+      # deliver notifications
+      - run: 
+          name: deliver
+          command:
+            echo deliver
+
+  acceptance-test:
+    <<: *defaults
+    executor: node-executor
+    steps:
+      - run: echo todo
+
+# Invoke jobs via workflows
+# (order not exact:) environment, checkout, build,
+# VERIFICATION:
+# unit test, automated test, integration test
+# VERIFICATION/VALIDATION:
+# system test, regression test
+# VALIDATION:
+# acceptance test, usability test
+# package, release/deliver, deploy, validate, verify
+# A set of rules defining how jobs (such as build, test, deploy) are run, giving teams 
+# granular control over their software development process
+# See: https://circleci.com/docs/2.0/configuration-reference/#workflows
+workflows:
+  version: 2
+
+  build-deploy:
+    jobs:
+      - set-up
+      - experiment:
+          requires:
+            - set-up
+      - build:
+          requires:
+            - set-up
+      - lint:
+          requires:
+            - build
+      - test:
+          requires:
+            - build
+      - verification: # TODO:: make these no depend on one-another
+          requires:
+            - build
+      # - integration-test
+      # - system-test
+      - version:
+          requires:
+            - test
+            - verification
+            - lint
+      - package:
+          requires:
+            - version
+      - release:
+          requires:
+            - package
+      # - regression-test
+      - acceptance-test:
+          requires:
+            - release
+      - deliver:
+          requires:
+            - acceptance-test

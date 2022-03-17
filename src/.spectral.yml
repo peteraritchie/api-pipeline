@@ -1,0 +1,22 @@
+extends: [[spectral:oas, all]]
+
+functionsDir: ./functions/
+
+functions:
+  - requiredPropertiesExist
+
+rules:
+  contact-properties: false
+  oas3-parameter-description: false
+  operation-description: false
+  operation-2xx-response: false
+  operation-default-response: false
+
+  required-properties-must-exist:
+    description: Required properties must exist
+    given: $..[?(@.schema||@.items)].[?(@.required)]
+    severity: error
+    recommended: true
+    message: "{{error}}"
+    then:
+      function: requiredPropertiesExist

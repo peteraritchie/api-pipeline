@@ -1,0 +1,11 @@
+{
+    "generator-cli": {
+        "generators": {
+            "ts": {
+                "additionalProperties": {
+                    "npmVersion": "0.0.0"
+                }
+            }
+        }
+    }
+}
